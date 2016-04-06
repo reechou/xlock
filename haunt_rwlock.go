@@ -44,8 +44,8 @@ func rwLock(client *etcd.Client, lockType LOCK_TYPE, namespace, name, value stri
 func rwUnlock(client *etcd.Client, namespace, name string, token TOKEN) error {
 	glog.Infof("[rwUnlock] unlock lock[%s] token[%s]", name, token)
 
-	if _, err := client.Delete(path.Join(HAUNT_TIMING_LOCK_DIR, namespace, name, token), false); err != nil {
-		glog.Errorf("[HauntTimingRWLock][unlock] failed to delete key[%s] error: %s", path.Join(HAUNT_TIMING_LOCK_DIR, namespace, name, token), err.Error())
+	if _, err := client.Delete(path.Join(HAUNT_TIMING_LOCK_DIR, namespace, name, string(token)), false); err != nil {
+		glog.Errorf("[HauntTimingRWLock][unlock] failed to delete key[%s] error: %s", path.Join(HAUNT_TIMING_LOCK_DIR, namespace, name, string(token)), err.Error())
 		return ErrLockDelete
 	}
 
@@ -147,7 +147,7 @@ func tryLock(client *etcd.Client, lockType LOCK_TYPE, namespace, name, value, to
 			if value.LockType != LockTypes[H_LOCK_WRITE] || t != token {
 				return false, nil
 			}
-			if err := refreshTTL(client, lockType, namespace, name, value, token, ttl); err != nil {
+			if err := refreshTTL(client, lockType, namespace, name, value.ID, token, ttl); err != nil {
 				return false, err
 			}
 			return true, nil
@@ -156,7 +156,7 @@ func tryLock(client *etcd.Client, lockType LOCK_TYPE, namespace, name, value, to
 			return false, nil
 		}
 		if t == token {
-			if err := refreshTTL(client, lockType, namespace, name, value, token, ttl); err != nil {
+			if err := refreshTTL(client, lockType, namespace, name, value.ID, token, ttl); err != nil {
 				return false, err
 			}
 			return true, nil
@@ -184,7 +184,7 @@ func refreshTTL(client *etcd.Client, lockType LOCK_TYPE, namespace, name, value,
 	return nil
 }
 
-func watch(client *etcd.Client, namespace, name string, watchCh *etcd.Response, watchStopCh chan bool, watchFailCh chan bool) {
+func watch(client *etcd.Client, namespace, name string, watchCh chan *etcd.Response, watchStopCh chan bool, watchFailCh chan bool) {
 	_, err := client.Watch(path.Join(HAUNT_TIMING_LOCK_DIR, namespace, name), 0, true, watchCh, watchStopCh)
 	if err == etcd.ErrWatchStoppedByUser {
 		return
