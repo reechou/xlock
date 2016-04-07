@@ -41,9 +41,9 @@ func goGetTLock(lockName string, tLock *HauntTimingRWLock) {
 }
 
 func TestTimingLock(t *testing.T) {
-	tLock1 := NewHauntTimingRWLock(NewEtcdClient("192.168.66.205:2379,192.168.66.237:2379"), H_LOCK_WRITE, "youzan", "twlock", "v", 30, false)
-	tLock2 := NewHauntTimingRWLock(NewEtcdClient("192.168.66.205:2379,192.168.66.237:2379"), H_LOCK_WRITE, "youzan", "twlock", "v", 30, false)
-	tLock3 := NewHauntTimingRWLock(NewEtcdClient("192.168.66.205:2379,192.168.66.237:2379"), H_LOCK_READ, "youzan", "twlock", "v", 30, false)
+	tLock1 := NewHauntTimingRWLock(NewEtcdClient("192.168.66.205:2379,192.168.66.237:2379"), H_LOCK_WRITE, "youzan", "twlock", "v", 30)
+	tLock2 := NewHauntTimingRWLock(NewEtcdClient("192.168.66.205:2379,192.168.66.237:2379"), H_LOCK_WRITE, "youzan", "twlock", "v", 30)
+	tLock3 := NewHauntTimingRWLock(NewEtcdClient("192.168.66.205:2379,192.168.66.237:2379"), H_LOCK_READ, "youzan", "twlock", "v", 30)
 
 	go goGetTLock("tLock1", tLock1)
 	go goGetTLock("tLock2", tLock2)

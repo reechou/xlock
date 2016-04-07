@@ -15,7 +15,6 @@ import (
 	"errors"
 	"fmt"
 	"path"
-	"time"
 
 	"github.com/coreos/go-etcd/etcd"
 	"github.com/golang/glog"
@@ -103,36 +102,29 @@ func (self *HauntSeizeLock) Unlock() error {
 // 分布式时序锁 Distributed timing lock
 // ETCD维持一份sequence，保证子节点创建的时序性，从而也形成了每个客户端的全局时序
 type HauntTimingRWLock struct {
-	client      *etcd.Client
-	name        string
-	id          string
-	ttl         uint64
-	queueTTL    uint64
-	token       string
-	ifRefresh   bool
-	refreshStop chan bool
-	ifHolding   bool
-	refreshKey  string
-	refreshVal  string
-	lockType    LOCK_TYPE
-	stop        chan bool
+	client     *etcd.Client
+	name       string
+	id         string
+	ttl        uint64
+	queueTTL   uint64
+	token      string
+	refreshKey string
+	lockType   LOCK_TYPE
+	stop       chan bool
 }
 
 var LockTypes = map[LOCK_TYPE]string{H_LOCK_READ: "haunt-read-lock", H_LOCK_WRITE: "haunt-write-lock"}
 
-func NewHauntTimingRWLock(etcdClient *etcd.Client, lockType LOCK_TYPE, namespace, name, value string, ttl uint64, ifRefresh bool) *HauntTimingRWLock {
+func NewHauntTimingRWLock(etcdClient *etcd.Client, lockType LOCK_TYPE, namespace, name, value string, ttl uint64) *HauntTimingRWLock {
 	return &HauntTimingRWLock{
-		client:      etcdClient,
-		name:        path.Join(HAUNT_TIMING_LOCK_DIR, namespace, name),
-		id:          value,
-		ttl:         ttl,
-		queueTTL:    30,
-		ifRefresh:   ifRefresh,
-		refreshStop: make(chan bool, 1),
-		ifHolding:   false,
-		token:       "",
-		lockType:    lockType,
-		stop:        make(chan bool, 1),
+		client:   etcdClient,
+		name:     path.Join(HAUNT_TIMING_LOCK_DIR, namespace, name),
+		id:       value,
+		ttl:      ttl,
+		queueTTL: 30,
+		token:    "",
+		lockType: lockType,
+		stop:     make(chan bool, 1),
 	}
 }
 
@@ -164,10 +156,6 @@ func (self *HauntTimingRWLock) Lock() error {
 func (self *HauntTimingRWLock) Unlock() error {
 	glog.Infof("[HauntTimingRWLock][unlock] unlock lock[%s] token[%s]", self.name, self.token)
 
-	if self.ifRefresh && self.ifHolding {
-		self.refreshStop <- true
-	}
-
 	if _, err := self.client.Delete(self.refreshKey, false); err != nil {
 		glog.Errorf("[HauntTimingRWLock][unlock] failed to delete key[%s] error: %s", self.refreshKey, err.Error())
 		return ErrLockDelete
@@ -186,9 +174,6 @@ func (self *HauntTimingRWLock) GetToken() string {
 }
 
 func (self *HauntTimingRWLock) StopLock() {
-	if self.ifRefresh && self.ifHolding {
-		self.refreshStop <- true
-	}
 	close(self.stop)
 }
 
@@ -317,33 +302,12 @@ func (self *HauntTimingRWLock) refreshTTL() error {
 		glog.Errorf("[HauntTimingRWLock][refreshTTL] failed to marshal value lock[%s] error: %s", self.name, err.Error())
 		return ErrLockMarshal
 	}
-	self.refreshVal = string(valueBytes)
-	_, err = self.client.Update(self.refreshKey, self.refreshVal, self.ttl)
+	_, err = self.client.Update(self.refreshKey, string(valueBytes), self.ttl)
 	if err != nil {
 		glog.Errorf("[HauntTimingRWLock][refreshTTL] failed to refresh lock[%s] error: %s", self.name, err.Error())
 		return ErrLockExpired
 	}
-	if self.ifRefresh {
-		go self.refresh()
-		self.ifHolding = true
-	}
-
 	return nil
-}
-
-func (self *HauntTimingRWLock) refresh() {
-	for {
-		select {
-		case <-self.refreshStop:
-			glog.V(2).Infof("[HauntTimingRWLock][refresh] Stopping refresh for lock %s", self.refreshKey)
-			return
-		case <-time.After(time.Second * time.Duration(self.ttl*4/10)):
-			_, err := self.client.Update(self.refreshKey, self.refreshVal, self.ttl)
-			if err != nil {
-				glog.Errorf("[HauntTimingRWLock][refresh] Failed to set ttl for lock[%s] error:%s", self.refreshKey, err.Error())
-			}
-		}
-	}
 }
 
 func (self *HauntTimingRWLock) watch(watchCh chan *etcd.Response, watchStopCh chan bool, watchFailCh chan bool) {
