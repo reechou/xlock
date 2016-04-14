@@ -229,7 +229,7 @@ func (self *EtcdLock) acquire() (ret error) {
 		if rsp.EtcdIndex < rsp.Node.ModifiedIndex {
 			preIdx = rsp.Node.ModifiedIndex + 1
 		} else {
-			preIdx = rsp.EtcdIndex
+			preIdx = rsp.EtcdIndex + 1
 		}
 		rsp, err = self.client.Watch(self.name, preIdx, false, nil, self.watchStopChan)
 		if err != nil {
