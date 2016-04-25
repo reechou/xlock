@@ -10,7 +10,6 @@ package haunt_lock
 import (
 	"errors"
 	"fmt"
-	"path"
 	"runtime"
 	"sync"
 	"time"
@@ -46,6 +45,7 @@ type Master interface {
 	Start()
 	Stop()
 	GetEventsChan() <-chan *MasterEvent
+	GetKey() string
 	GetMaster() string
 	TryAcquire() (ret error)
 }
@@ -67,10 +67,10 @@ type EtcdLock struct {
 	modifiedIndex      uint64
 }
 
-func NewMaster(etcdClient *etcd.Client, namespace, name, value string, ttl uint64) Master {
+func NewMaster(etcdClient *etcd.Client, name, value string, ttl uint64) Master {
 	return &EtcdLock{
 		client:             etcdClient,
-		name:               path.Join(HAUNT_MASTER_DIR, namespace, name),
+		name:               name,
 		id:                 value,
 		ttl:                ttl,
 		enable:             false,
@@ -115,11 +115,16 @@ func (self *EtcdLock) Stop() {
 	self.Unlock()
 
 	self.watchStopChan <- true
+	// wait for acquire to finish
 	<-self.stoppedChan
 }
 
 func (self *EtcdLock) GetEventsChan() <-chan *MasterEvent {
 	return self.eventsChan
+}
+
+func (self *EtcdLock) GetKey() string {
+	return self.name
 }
 
 func (self *EtcdLock) GetMaster() string {

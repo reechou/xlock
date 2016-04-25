@@ -46,9 +46,9 @@ func goMaster(host string, master *EtcdLock) {
 func TestMaster(t *testing.T) {
 	hosts := initEtcdHost("192.168.66.205:2379,192.168.66.237:2379")
 	etcdClient := etcd.NewClient(hosts)
-	lock := NewMaster(etcdClient, "youzan", "mtest", "127.0.0.1", 30)
-	lock2 := NewMaster(etcdClient, "youzan", "mtest", "127.0.0.2", 30)
-	lock3 := NewMaster(etcdClient, "youzan", "mtest", "127.0.0.3", 30)
+	lock := NewMaster(etcdClient, "mtest", "127.0.0.1", 30)
+	lock2 := NewMaster(etcdClient, "mtest", "127.0.0.2", 30)
+	lock3 := NewMaster(etcdClient, "mtest", "127.0.0.3", 30)
 
 	go goMaster("127.0.0.1", lock.(*EtcdLock))
 	go goMaster("127.0.0.2", lock2.(*EtcdLock))
