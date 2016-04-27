@@ -6,20 +6,25 @@ import (
 	"time"
 )
 
-func goGetSLock(lockName string, sLock *HauntSeizeLock) {
+func goGetSLock(lockName string, sLock *SeizeLock) {
 	err := sLock.Lock()
 	if err != nil {
 		fmt.Println(lockName, err.Error())
 		return
 	}
 	fmt.Println(lockName, "Get Lock success.")
+	err = sLock.Lock()
+	if err != nil {
+		fmt.Println(lockName, err.Error())
+		return
+	}
 	sLock.Unlock()
 }
 
 func TestSeizeLock(t *testing.T) {
-	sLock1 := NewHauntSeizeLock(NewEtcdClient("192.168.66.205:2379,192.168.66.237:2379"), "slock", "v1", 10)
-	sLock2 := NewHauntSeizeLock(NewEtcdClient("192.168.66.205:2379,192.168.66.237:2379"), "slock", "v2", 10)
-	sLock3 := NewHauntSeizeLock(NewEtcdClient("192.168.66.205:2379,192.168.66.237:2379"), "slock", "v3", 10)
+	sLock1 := NewSeizeLock(NewEtcdClient("192.168.66.205:2379,192.168.66.237:2379"), "slock", "v1", 10)
+	sLock2 := NewSeizeLock(NewEtcdClient("192.168.66.205:2379,192.168.66.237:2379"), "slock", "v2", 10)
+	sLock3 := NewSeizeLock(NewEtcdClient("192.168.66.205:2379,192.168.66.237:2379"), "slock", "v3", 10)
 
 	go goGetSLock("v1", sLock1)
 	go goGetSLock("v2", sLock2)

@@ -15,6 +15,8 @@ import (
 	"errors"
 	"fmt"
 	"path"
+	"runtime"
+	"time"
 
 	"github.com/coreos/go-etcd/etcd"
 	"github.com/golang/glog"
@@ -25,7 +27,8 @@ type TOKEN string
 
 var (
 	// about huant seize lock err
-	ErrGetSeizeLock = errors.New("Lock is exist.")
+	ErrGetSeizeLock  = errors.New("Lock is exist.")
+	ErrSeizeLockAg   = errors.New("Lock same value again.")
 	// about haunt timing lock err
 	ErrLockMarshal   = errors.New("Marshal error.")
 	ErrLockUnmarshal = errors.New("Unmarshal error.")
@@ -52,51 +55,115 @@ type LockValue struct {
 }
 
 // 分布式抢占锁 Distributed seize lock
-// 把etcd上的一个node看作是一把锁，通过create node的方式来实现
-type HauntSeizeLock struct {
-	client *etcd.Client
-	name   string
-	value  string
-	ttl    uint64
+// 把etcd上的一个node看作是一把锁，通过create node的方式来实现，若acquire成功，会refresh锁，停止请unlock()
+type SeizeLock struct {
+	client    *etcd.Client
+	name      string
+	value     string
+	ttl       uint64
+	ifHolding bool
+
+	refreshStopCh chan bool
+	modifiedIndex uint64
 }
 
-func NewHauntSeizeLock(etcdClient *etcd.Client, name, value string, ttl uint64) *HauntSeizeLock {
-	return &HauntSeizeLock{
-		client: etcdClient,
-		name:   path.Join(HAUNT_SEIZE_LOCK_DIR, name),
-		value:  value,
-		ttl:    ttl,
+func NewSeizeLock(etcdClient *etcd.Client, name, value string, ttl uint64) *SeizeLock {
+	return &SeizeLock{
+		client:        etcdClient,
+		name:          name,
+		value:         value,
+		ttl:           ttl,
+		ifHolding:     false,
+		refreshStopCh: make(chan bool, 1),
+		modifiedIndex: 0,
 	}
 }
 
-func (self *HauntSeizeLock) Lock() error {
+func (self *SeizeLock) Lock() (ret error) {
+	defer func() {
+		if r := recover(); r != nil {
+			callers := ""
+			for i := 0; true; i++ {
+				_, file, line, ok := runtime.Caller(i)
+				if !ok {
+					break
+				}
+				callers = callers + fmt.Sprintf("%v:%v\n", file, line)
+			}
+			errMsg := fmt.Sprintf("[EtcdLock][TryAcquire] Recovered from panic: %#v (%v)\n%v", r, r, callers)
+			glog.Errorf(errMsg)
+			ret = errors.New(errMsg)
+		}
+	}()
+
+
 	rsp, err := self.client.Get(self.name, false, false)
 	if err != nil {
 		if IfETCDKeyNotFound(err) {
-			glog.Infof("[HauntSeizeLock][Lock] try to acquire lock[%s]", self.name)
+			glog.Infof("[SeizeLock][Lock] try to acquire lock[%s]", self.name)
 			rsp, err = self.client.Create(self.name, self.value, self.ttl)
 			if err != nil {
-				glog.Errorf("[HauntSeizeLock][Lock] etcd create lock[%s] error: %s", self.name, err.Error())
+				glog.Errorf("[SeizeLock][Lock] etcd create lock[%s] error: %s", self.name, err.Error())
 				return err
+			}
+			if rsp.Node.Value == self.value {
+				glog.Infof("[SeizeLock] acquire lock[%s]", self.name)
+				self.ifHolding = true
+				self.modifiedIndex = rsp.Node.ModifiedIndex
+				go self.refresh()
 			}
 			return nil
 		} else {
-			glog.Errorf("[HauntSeizeLock][Lock] etcd get lock[%s] error: %s", self.name, err.Error())
+			glog.Errorf("[SeizeLock][Lock] etcd get lock[%s] error: %s", self.name, err.Error())
 			return err
 		}
 	}
-	glog.Infof("[HauntSeizeLock][Lock] get lock[%s] failed, lock exist value[%s]", self.name, rsp.Node.Value)
+	if rsp.Node.Value == self.value {
+		glog.Infof("[SeizeLock][Lock] get lock[%s] has exist with you[%s].", self.name, self.value)
+		return ErrSeizeLockAg
+	}
+	glog.Infof("[SeizeLock][Lock] get lock[%s] failed, lock exist value[%s]", self.name, rsp.Node.Value)
 
 	return ErrGetSeizeLock
 }
 
-func (self *HauntSeizeLock) Unlock() error {
-	_, err := self.client.Delete(self.name, false)
-	if err != nil {
-		glog.Errorf("[HauntSeizeLock][Unlock] delete lock[%s] error: %s", self.name, err.Error())
-		return err
+func (self *SeizeLock) Unlock() error {
+	if self.ifHolding {
+		_, err := self.client.CompareAndDelete(self.name, self.value, 0)
+		if err != nil {
+			glog.Errorf("[SeizeLock][Unlock] delete lock[%s] error: %s", self.name, err.Error())
+		}
+		self.ifHolding = false
+		self.refreshStopCh <- true
 	}
+
 	return nil
+}
+
+func (self *SeizeLock) refresh() {
+	for {
+		select {
+		case <-self.refreshStopCh:
+			glog.V(2).Infof("Stopping seize lock[%s] refresh.", self.name)
+			return
+		case <-time.After(time.Second * time.Duration(self.ttl*4/10)):
+			if rsp, err := self.client.CompareAndSwap(self.name, self.value, self.ttl, self.value, self.modifiedIndex); err != nil {
+				etcdErr, ok := err.(*etcd.EtcdError)
+				if ok {
+					if etcdErr.ErrorCode != etcd.ErrCodeEtcdNotReachable {
+						// if ! not reachable, maybe value changed, return.
+						glog.V(2).Infof("Changed seize lock[%s] to value[]%s.", self.name, rsp.Node.Value)
+						return
+					}
+				} else {
+					// stop refresh
+					return
+				}
+			} else {
+				self.modifiedIndex = rsp.Node.ModifiedIndex
+			}
+		}
+	}
 }
 
 // 分布式时序锁 Distributed timing lock
