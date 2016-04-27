@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/coreos/go-etcd/etcd"
-	"github.com/golang/glog"
 )
 
 type EVENT_TYPE int
@@ -85,7 +84,7 @@ func NewMaster(etcdClient *etcd.Client, name, value string, ttl uint64) Master {
 }
 
 func (self *EtcdLock) Start() {
-	glog.Infof("[EtcdLock][Start] start to acquire lock[%s].", self.name)
+	logger.Infof("[EtcdLock][Start] start to acquire lock[%s].", self.name)
 	self.Lock()
 	if self.enable {
 		self.Unlock()
@@ -105,7 +104,7 @@ func (self *EtcdLock) Start() {
 }
 
 func (self *EtcdLock) Stop() {
-	glog.Infof("[EtcdLock][Stop] stop acquire lock[%s].", self.name)
+	logger.Infof("[EtcdLock][Stop] stop acquire lock[%s].", self.name)
 	self.Lock()
 	if !self.enable {
 		self.Unlock()
@@ -145,7 +144,7 @@ func (self *EtcdLock) TryAcquire() (ret error) {
 				callers = callers + fmt.Sprintf("%v:%v\n", file, line)
 			}
 			errMsg := fmt.Sprintf("[EtcdLock][TryAcquire] Recovered from panic: %#v (%v)\n%v", r, r, callers)
-			glog.Errorf(errMsg)
+			logger.Errorf(errMsg)
 			ret = errors.New(errMsg)
 		}
 	}()
@@ -154,20 +153,20 @@ func (self *EtcdLock) TryAcquire() (ret error) {
 	if err != nil {
 		etcdErr, ok := err.(*etcd.EtcdError)
 		if ok && etcdErr != nil && etcdErr.ErrorCode == ErrCodeETCDKeyNotFound {
-			glog.Infof("[EtcdLock][TryAcquire] try to acquire lock[%s]", self.name)
+			logger.Infof("[EtcdLock][TryAcquire] try to acquire lock[%s]", self.name)
 			rsp, err = self.client.Create(self.name, self.id, self.ttl)
 			if err != nil {
-				glog.Errorf("[EtcdLock][TryAcquire] etcd create lock[%s] error: %s", self.name, err.Error())
+				logger.Errorf("[EtcdLock][TryAcquire] etcd create lock[%s] error: %s", self.name, err.Error())
 				return err
 			}
 		} else {
-			glog.Errorf("[EtcdLock][TryAcquire] etcd get lock[%s] error: %s", self.name, err.Error())
+			logger.Errorf("[EtcdLock][TryAcquire] etcd get lock[%s] error: %s", self.name, err.Error())
 			return err
 		}
 	}
 
 	if rsp.Node.Value == self.id {
-		glog.V(2).Infof("[EtcdLock][TryAcquire] acquire lock: %s", self.name)
+		logger.Infof("[EtcdLock][TryAcquire] acquire lock: %s", self.name)
 		self.ifHolding = true
 		go self.refresh()
 	} else {
@@ -189,7 +188,7 @@ func (self *EtcdLock) acquire() (ret error) {
 				callers = callers + fmt.Sprintf("%v:%v\n", file, line)
 			}
 			errMsg := fmt.Sprintf("[EtcdLock][acquire] Recovered from panic: %#v (%v)\n%v", r, r, callers)
-			glog.Errorf(errMsg)
+			logger.Errorf(errMsg)
 			ret = errors.New(errMsg)
 		}
 	}()
@@ -208,14 +207,14 @@ func (self *EtcdLock) acquire() (ret error) {
 			if err != nil {
 				etcdErr, ok := err.(*etcd.EtcdError)
 				if ok && etcdErr != nil && etcdErr.ErrorCode == ErrCodeETCDKeyNotFound {
-					glog.Infof("[EtcdLock][acquire] try to acquire lock[%s]", self.name)
+					logger.Infof("[EtcdLock][acquire] try to acquire lock[%s]", self.name)
 					rsp, err = self.client.Create(self.name, self.id, self.ttl)
 					if err != nil {
-						glog.Errorf("[EtcdLock][acquire] etcd create lock[%s] error: %s", self.name, err.Error())
+						logger.Errorf("[EtcdLock][acquire] etcd create lock[%s] error: %s", self.name, err.Error())
 						continue
 					}
 				} else {
-					glog.Errorf("[EtcdLock][acquire] etcd get lock[%s] error: %s", self.name, err.Error())
+					logger.Errorf("[EtcdLock][acquire] etcd get lock[%s] error: %s", self.name, err.Error())
 					time.Sleep(RETRY_SLEEP * time.Millisecond)
 					continue
 				}
@@ -239,9 +238,9 @@ func (self *EtcdLock) acquire() (ret error) {
 		rsp, err = self.client.Watch(self.name, preIdx, false, nil, self.watchStopChan)
 		if err != nil {
 			if etcd.ErrWatchStoppedByUser == err {
-				glog.Infof("[EtcdLock][acquire] watch lock[%s] stop by user.", self.name)
+				logger.Infof("[EtcdLock][acquire] watch lock[%s] stop by user.", self.name)
 			} else {
-				glog.Errorf("[EtcdLock][acquire] failed to watch lock[%s] error: %s", self.name, err.Error())
+				logger.Errorf("[EtcdLock][acquire] failed to watch lock[%s] error: %s", self.name, err.Error())
 			}
 		}
 	}
@@ -252,20 +251,20 @@ func (self *EtcdLock) acquire() (ret error) {
 func (self *EtcdLock) processEtcdRsp(rsp *etcd.Response) {
 	if rsp.Node.Value == self.id {
 		if !self.ifHolding {
-			glog.V(2).Infof("[EtcdLock][processEtcdRsp] acquire lock: %s", self.name)
+			logger.Infof("[EtcdLock][processEtcdRsp] acquire lock: %s", self.name)
 			self.ifHolding = true
 			self.eventsChan <- &MasterEvent{Type: MASTER_ADD, Master: self.id, ModifiedIndex: rsp.Node.ModifiedIndex}
 			go self.refresh()
 		}
 	} else {
 		if self.ifHolding {
-			glog.Errorf("[EtcdLock][processEtcdRsp] lost lock: %s", self.name)
+			logger.Errorf("[EtcdLock][processEtcdRsp] lost lock: %s", self.name)
 			self.ifHolding = false
 			self.refreshStoppedChan <- true
 			self.eventsChan <- &MasterEvent{Type: MASTER_DELETE}
 		}
 		if self.master != rsp.Node.Value {
-			glog.V(2).Infof("[EtcdLock][processEtcdRsp] modify lock[%s] to master[%s]", self.name, rsp.Node.Value)
+			logger.Infof("[EtcdLock][processEtcdRsp] modify lock[%s] to master[%s]", self.name, rsp.Node.Value)
 			self.eventsChan <- &MasterEvent{Type: MASTER_MODIFY, Master: rsp.Node.Value, ModifiedIndex: rsp.Node.ModifiedIndex}
 		}
 	}
@@ -273,10 +272,10 @@ func (self *EtcdLock) processEtcdRsp(rsp *etcd.Response) {
 
 func (self *EtcdLock) stopAcquire() {
 	if self.ifHolding {
-		glog.V(2).Infof("[EtcdLock][stopAcquire] delete lock: %s", self.name)
+		logger.Infof("[EtcdLock][stopAcquire] delete lock: %s", self.name)
 		_, err := self.client.Delete(self.name, false)
 		if err != nil {
-			glog.Errorf("[EtcdLock][stopAcquire] failed to delete lock: %s error: %s", self.name, err.Error())
+			logger.Errorf("[EtcdLock][stopAcquire] failed to delete lock: %s error: %s", self.name, err.Error())
 		}
 		self.ifHolding = false
 		self.refreshStoppedChan <- true
@@ -291,12 +290,12 @@ func (self *EtcdLock) refresh() {
 	for {
 		select {
 		case <-self.refreshStoppedChan:
-			glog.V(2).Infof("[EtcdLock][refresh] Stopping refresh for lock %s", self.name)
+			logger.Infof("[EtcdLock][refresh] Stopping refresh for lock %s", self.name)
 			return
 		case <-time.After(time.Second * time.Duration(self.ttl*4/10)):
 			rsp, err := self.client.CompareAndSwap(self.name, self.id, self.ttl, self.id, self.modifiedIndex)
 			if err != nil {
-				glog.Errorf("[EtcdLock][refresh] Failed to set ttl for lock[%s] error:%s", self.name, err.Error())
+				logger.Errorf("[EtcdLock][refresh] Failed to set ttl for lock[%s] error:%s", self.name, err.Error())
 			} else {
 				self.modifiedIndex = rsp.Node.ModifiedIndex
 			}

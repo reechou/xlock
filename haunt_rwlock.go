@@ -1,13 +1,11 @@
-
 package haunt_lock
 
 import (
 	"encoding/json"
-//	"fmt"
+	//	"fmt"
 	"path"
 
 	"github.com/coreos/go-etcd/etcd"
-	"github.com/golang/glog"
 )
 
 func RLock(client *etcd.Client, namespace, name, value string, ttl uint64) (TOKEN, error) {
@@ -27,7 +25,7 @@ func WUnlock(client *etcd.Client, namespace, name string, token TOKEN) error {
 }
 
 func rwLock(client *etcd.Client, lockType LOCK_TYPE, namespace, name, value string, ttl uint64) (TOKEN, error) {
-	glog.Infof("[rwLock] lock[%s-%s] ttl[%d]", name, LockTypes[lockType], ttl)
+	logger.Infof("[rwLock] lock[%s-%s] ttl[%d]", name, LockTypes[lockType], ttl)
 
 	token, err := enqueueLock(client, lockType, namespace, name, value, ttl)
 	if err != nil {
@@ -42,10 +40,10 @@ func rwLock(client *etcd.Client, lockType LOCK_TYPE, namespace, name, value stri
 }
 
 func rwUnlock(client *etcd.Client, namespace, name string, token TOKEN) error {
-	glog.Infof("[rwUnlock] unlock lock[%s] token[%s]", name, token)
+	logger.Infof("[rwUnlock] unlock lock[%s] token[%s]", name, token)
 
 	if _, err := client.Delete(path.Join(HAUNT_TIMING_LOCK_DIR, namespace, name, string(token)), false); err != nil {
-		glog.Errorf("[HauntTimingRWLock][unlock] failed to delete key[%s] error: %s", path.Join(HAUNT_TIMING_LOCK_DIR, namespace, name, string(token)), err.Error())
+		logger.Errorf("[HauntTimingRWLock][unlock] failed to delete key[%s] error: %s", path.Join(HAUNT_TIMING_LOCK_DIR, namespace, name, string(token)), err.Error())
 		return ErrLockDelete
 	}
 
@@ -59,19 +57,19 @@ func enqueueLock(client *etcd.Client, lockType LOCK_TYPE, namespace, name, value
 	}
 	valueJson, err := json.Marshal(valueL)
 	if err != nil {
-		glog.Errorf("[enqueueLock] failed to Marshal name[%s] id[%s] error: %s", name, value, err.Error())
+		logger.Errorf("[enqueueLock] failed to Marshal name[%s] id[%s] error: %s", name, value, err.Error())
 		return "", ErrLockMarshal
 	}
 
 	key := path.Join(HAUNT_TIMING_LOCK_DIR, namespace, name)
 	rsp, err := client.CreateInOrder(key, string(valueJson), 30)
 	if err != nil {
-		glog.Errorf("[enqueueLock] failed to CreateInOrder name[%s] id[%s] error:%s", key, value, err.Error())
+		logger.Errorf("[enqueueLock] failed to CreateInOrder name[%s] id[%s] error:%s", key, value, err.Error())
 		return "", ErrEnqueueLock
 	}
 
 	_, token := path.Split(rsp.Node.Key)
-	glog.V(2).Infof("[enqueueLock] Got token[%s] for lock[%s] with id[%s]", token, name, value)
+	logger.Infof("[enqueueLock] Got token[%s] for lock[%s] with id[%s]", token, name, value)
 
 	return token, nil
 }
@@ -82,19 +80,19 @@ func waitForLock(client *etcd.Client, lockType LOCK_TYPE, namespace, name, value
 	watchStopChan := make(chan bool, 1)
 
 	go func() {
-		glog.Infof("[waitForLock] start to watch lock[%s-%s] token[%s]", name, LockTypes[lockType], token)
+		logger.Infof("[waitForLock] start to watch lock[%s-%s] token[%s]", name, LockTypes[lockType], token)
 		watch(client, namespace, name, watchChan, watchStopChan, watchFailChan)
 	}()
 
 	defer func() {
-		glog.Infof("[waitForLock] stop to watch lock[%s-%s] token[%s]", name, LockTypes[lockType], token)
+		logger.Infof("[waitForLock] stop to watch lock[%s-%s] token[%s]", name, LockTypes[lockType], token)
 		watchStopChan <- true
 	}()
 
 	if ifGot, err := tryLock(client, lockType, namespace, name, value, token, ttl); err != nil {
 		return err
 	} else if ifGot {
-		glog.Infof("[waitForLock] got the lock[%s-%s] token[%s]", name, LockTypes[lockType], token)
+		logger.Infof("[waitForLock] got the lock[%s-%s] token[%s]", name, LockTypes[lockType], token)
 		return nil
 	}
 
@@ -102,28 +100,28 @@ func waitForLock(client *etcd.Client, lockType LOCK_TYPE, namespace, name, value
 		select {
 		case rsp := <-watchChan:
 			if rsp == nil {
-				glog.Info("[waitForLock] got nil rsp in watch channel.")
+				logger.Info("[waitForLock] got nil rsp in watch channel.")
 				continue
 			}
-			glog.Infof("[waitForLock] watch rsp action[%s] lock[%s-%s] token[%s]", rsp.Action, name, LockTypes[lockType], token)
+			logger.Infof("[waitForLock] watch rsp action[%s] lock[%s-%s] token[%s]", rsp.Action, name, LockTypes[lockType], token)
 			if rsp.Action == "expire" || rsp.Action == "delete" {
 				if _, t := path.Split(rsp.Node.Key); t == token {
-					glog.Errorf("[waitForLock] lack[%s] token[%s] expired", name, token)
+					logger.Errorf("[waitForLock] lack[%s] token[%s] expired", name, token)
 					return ErrLockExpired
 				}
 				if ifGot, err := tryLock(client, lockType, namespace, name, value, token, ttl); err != nil {
 					return err
 				} else if ifGot {
-					glog.Infof("[waitForLock] got the lock[%s-%s] token[%s]", name, LockTypes[lockType], token)
+					logger.Infof("[waitForLock] got the lock[%s-%s] token[%s]", name, LockTypes[lockType], token)
 					return nil
 				}
 			}
 		case <-watchFailChan:
 			watchChan = make(chan *etcd.Response, 1)
 			go watch(client, namespace, name, watchChan, watchStopChan, watchFailChan)
-//		case <-self.stop:
-//			glog.Infof("[waitForLock] stop lock.")
-//			return fmt.Errorf("Stop lock by user.")
+			//		case <-self.stop:
+			//			logger.Infof("[waitForLock] stop lock.")
+			//			return fmt.Errorf("Stop lock by user.")
 		}
 	}
 
@@ -133,13 +131,13 @@ func waitForLock(client *etcd.Client, lockType LOCK_TYPE, namespace, name, value
 func tryLock(client *etcd.Client, lockType LOCK_TYPE, namespace, name, value, token string, ttl uint64) (bool, error) {
 	rsp, err := client.Get(path.Join(HAUNT_TIMING_LOCK_DIR, namespace, name), true, true)
 	if err != nil {
-		glog.Errorf("[tryAcquireLock] etcd get lock[%s] error: %s", name, err.Error())
+		logger.Errorf("[tryAcquireLock] etcd get lock[%s] error: %s", name, err.Error())
 		return false, ErrLockGet
 	}
 	for i, node := range rsp.Node.Nodes {
 		var value LockValue
 		if err := json.Unmarshal([]byte(node.Value), &value); err != nil {
-			glog.Errorf("[tryAcquireLock] json unmarshal error: %s", err.Error())
+			logger.Errorf("[tryAcquireLock] json unmarshal error: %s", err.Error())
 			return false, ErrLockUnmarshal
 		}
 		_, t := path.Split(node.Key)
@@ -173,12 +171,12 @@ func refreshTTL(client *etcd.Client, lockType LOCK_TYPE, namespace, name, value,
 	}
 	valueBytes, err := json.Marshal(valueL)
 	if err != nil {
-		glog.Errorf("[refreshTTL] failed to marshal value lock[%s] error: %s", name, err.Error())
+		logger.Errorf("[refreshTTL] failed to marshal value lock[%s] error: %s", name, err.Error())
 		return ErrLockMarshal
 	}
 	_, err = client.Update(path.Join(HAUNT_TIMING_LOCK_DIR, namespace, name, token), string(valueBytes), ttl)
 	if err != nil {
-		glog.Errorf("[refreshTTL] failed to refresh lock[%s] error: %s", name, err.Error())
+		logger.Errorf("[refreshTTL] failed to refresh lock[%s] error: %s", name, err.Error())
 		return ErrLockExpired
 	}
 	return nil
@@ -189,7 +187,7 @@ func watch(client *etcd.Client, namespace, name string, watchCh chan *etcd.Respo
 	if err == etcd.ErrWatchStoppedByUser {
 		return
 	} else {
-		glog.Errorf("[watch] watch key[%s] error: %s", name, err.Error())
+		logger.Errorf("[watch] watch key[%s] error: %s", name, err.Error())
 		watchFailCh <- true
 	}
 }
