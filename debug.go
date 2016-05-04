@@ -10,61 +10,65 @@ import (
 	"github.com/coreos/go-etcd/etcd"
 )
 
+const (
+	LOG_DEFAULT = iota
+	LOG_ERROR
+	LOG_INFO
+	LOG_DEBUG
+)
+
 var logger *lockLogger
 
-func SetLogger(l *log.Logger) {
-	logger = &lockLogger{l}
-	etcd.SetLogger(l)
+func SetLogger(l *log.Logger, level int) {
+	logger = &lockLogger{log: l, level: level}
+	if level >= LOG_DEBUG {
+		etcd.SetLogger(l)
+	}
 }
 
 type lockLogger struct {
-	log *log.Logger
+	log   *log.Logger
+	level int
 }
 
 func (p *lockLogger) Info(args ...interface{}) {
-	msg := "INFO: " + fmt.Sprint(args...)
-	p.log.Println(msg)
+	if p.level >= LOG_INFO {
+		msg := "INFO: " + fmt.Sprint(args...)
+		p.log.Println(msg)
+	}
 }
 
 func (p *lockLogger) Infof(f string, args ...interface{}) {
-	msg := "INFO: " + fmt.Sprintf(f, args...)
-	// Append newline if necessary
-	if !strings.HasSuffix(msg, "\n") {
-		msg = msg + "\n"
+	if p.level >= LOG_INFO {
+		msg := "INFO: " + fmt.Sprintf(f, args...)
+		// Append newline if necessary
+		if !strings.HasSuffix(msg, "\n") {
+			msg = msg + "\n"
+		}
+		p.log.Print(msg)
 	}
-	p.log.Print(msg)
-}
-
-func (p *lockLogger) Warning(args ...interface{}) {
-	msg := "WARNING: " + fmt.Sprint(args...)
-	p.log.Println(msg)
-}
-
-func (p *lockLogger) Warningf(f string, args ...interface{}) {
-	msg := "WARNING: " + fmt.Sprintf(f, args...)
-	// Append newline if necessary
-	if !strings.HasSuffix(msg, "\n") {
-		msg = msg + "\n"
-	}
-	p.log.Print(msg)
 }
 
 func (p *lockLogger) Error(args ...interface{}) {
-	msg := "ERROR: " + fmt.Sprint(args...)
-	p.log.Println(msg)
+	if p.level >= LOG_INFO {
+		msg := "ERROR: " + fmt.Sprint(args...)
+		p.log.Println(msg)
+	}
 }
 
 func (p *lockLogger) Errorf(f string, args ...interface{}) {
-	msg := "ERROR: " + fmt.Sprintf(f, args...)
-	// Append newline if necessary
-	if !strings.HasSuffix(msg, "\n") {
-		msg = msg + "\n"
+	if p.level >= LOG_INFO {
+		msg := "ERROR: " + fmt.Sprintf(f, args...)
+		// Append newline if necessary
+		if !strings.HasSuffix(msg, "\n") {
+			msg = msg + "\n"
+		}
+		p.log.Print(msg)
 	}
-	p.log.Print(msg)
 }
 
 func init() {
 	// Default logger uses the go default log.
-	SetLogger(log.New(ioutil.Discard, "go-x-lock", log.LstdFlags))
+	SetLogger(log.New(ioutil.Discard, "go-x-lock", log.LstdFlags), LOG_DEBUG)
 }
 
