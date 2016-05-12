@@ -158,7 +158,7 @@ func (self *SeizeLock) refresh() {
 				if ok {
 					if etcdErr.ErrorCode != etcd.ErrCodeEtcdNotReachable {
 						// if ! not reachable, maybe value changed, return.
-						logger.Infof("Changed seize lock[%s] to value[]%s.", self.name, rsp.Node.Value)
+						logger.Errorf("seize lock[%s] error: %s.", self.name, err.Error())
 						return
 					}
 				} else {
