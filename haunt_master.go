@@ -13,8 +13,9 @@ import (
 	"runtime"
 	"sync"
 	"time"
-
-	"github.com/coreos/go-etcd/etcd"
+	
+	"github.com/coreos/etcd/client"
+	"golang.org/x/net/context"
 )
 
 type EVENT_TYPE int
@@ -52,7 +53,7 @@ type Master interface {
 type EtcdLock struct {
 	sync.Mutex
 
-	client             *etcd.Client
+	client             *EtcdClient
 	name               string
 	id                 string
 	ttl                uint64
@@ -66,7 +67,7 @@ type EtcdLock struct {
 	modifiedIndex      uint64
 }
 
-func NewMaster(etcdClient *etcd.Client, name, value string, ttl uint64) Master {
+func NewMaster(etcdClient *EtcdClient, name, value string, ttl uint64) Master {
 	return &EtcdLock{
 		client:             etcdClient,
 		name:               name,
@@ -151,8 +152,7 @@ func (self *EtcdLock) TryAcquire() (ret error) {
 
 	rsp, err := self.client.Get(self.name, false, false)
 	if err != nil {
-		etcdErr, ok := err.(*etcd.EtcdError)
-		if ok && etcdErr != nil && etcdErr.ErrorCode == ErrCodeETCDKeyNotFound {
+		if client.IsKeyNotFound(err) {
 			logger.Infof("[EtcdLock][TryAcquire] try to acquire lock[%s]", self.name)
 			rsp, err = self.client.Create(self.name, self.id, self.ttl)
 			if err != nil {
@@ -193,7 +193,7 @@ func (self *EtcdLock) acquire() (ret error) {
 		}
 	}()
 
-	var rsp *etcd.Response
+	var rsp *client.Response
 	err := fmt.Errorf("Dummy error.")
 
 	for {
@@ -205,8 +205,7 @@ func (self *EtcdLock) acquire() (ret error) {
 		if err != nil || rsp.Node.Value == "" {
 			rsp, err = self.client.Get(self.name, false, false)
 			if err != nil {
-				etcdErr, ok := err.(*etcd.EtcdError)
-				if ok && etcdErr != nil && etcdErr.ErrorCode == ErrCodeETCDKeyNotFound {
+				if client.IsKeyNotFound(err) {
 					logger.Infof("[EtcdLock][acquire] try to acquire lock[%s]", self.name)
 					rsp, err = self.client.Create(self.name, self.id, self.ttl)
 					if err != nil {
@@ -230,25 +229,28 @@ func (self *EtcdLock) acquire() (ret error) {
 
 		var preIdx uint64
 		// TODO: maybe change with etcd change
-		if rsp.EtcdIndex < rsp.Node.ModifiedIndex {
+		if rsp.Index < rsp.Node.ModifiedIndex {
 			preIdx = rsp.Node.ModifiedIndex + 1
 		} else {
-			preIdx = rsp.EtcdIndex + 1
+			preIdx = rsp.Index + 1
 		}
-		rsp, err = self.client.Watch(self.name, preIdx, false, nil, self.watchStopChan)
+		watcher := self.client.Watch(self.name, preIdx, false)
+		//go func() {
+		//	select {
+		//	case <-self.watchStopChan:
+		//		cancel()
+		//	}
+		//}()
+		rsp, err = watcher.Next(context.Background())
 		if err != nil {
-			if etcd.ErrWatchStoppedByUser == err {
-				logger.Infof("[EtcdLock][acquire] watch lock[%s] stop by user.", self.name)
-			} else {
-				logger.Errorf("[EtcdLock][acquire] failed to watch lock[%s] error: %s", self.name, err.Error())
-			}
+			logger.Errorf("[EtcdLock][acquire] failed to watch lock[%s] error: %s", self.name, err.Error())
 		}
 	}
 
 	return nil
 }
 
-func (self *EtcdLock) processEtcdRsp(rsp *etcd.Response) {
+func (self *EtcdLock) processEtcdRsp(rsp *client.Response) {
 	if rsp.Node.Value == self.id {
 		if !self.ifHolding {
 			logger.Infof("[EtcdLock][processEtcdRsp] acquire lock: %s", self.name)

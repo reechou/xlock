@@ -17,8 +17,9 @@ import (
 	"path"
 	"runtime"
 	"time"
-
-	"github.com/coreos/go-etcd/etcd"
+	
+	"github.com/coreos/etcd/client"
+	"golang.org/x/net/context"
 )
 
 type LOCK_TYPE int
@@ -58,7 +59,7 @@ type LockValue struct {
 // 分布式抢占锁 Distributed seize lock
 // 把etcd上的一个node看作是一把锁，通过create node的方式来实现，若acquire成功，会refresh锁，停止请unlock()
 type SeizeLock struct {
-	client    *etcd.Client
+	client    *EtcdClient
 	name      string
 	value     string
 	ttl       uint64
@@ -68,7 +69,7 @@ type SeizeLock struct {
 	modifiedIndex uint64
 }
 
-func NewSeizeLock(etcdClient *etcd.Client, name, value string, ttl uint64) *SeizeLock {
+func NewSeizeLock(etcdClient *EtcdClient, name, value string, ttl uint64) *SeizeLock {
 	return &SeizeLock{
 		client:        etcdClient,
 		name:          name,
@@ -99,7 +100,7 @@ func (self *SeizeLock) Lock() (ret error) {
 
 	rsp, err := self.client.Get(self.name, false, false)
 	if err != nil {
-		if IfETCDKeyNotFound(err) {
+		if client.IsKeyNotFound(err) {
 			logger.Infof("[SeizeLock][Lock] try to acquire lock[%s]", self.name)
 			rsp, err = self.client.Create(self.name, self.value, self.ttl)
 			if err != nil {
@@ -131,11 +132,8 @@ func (self *SeizeLock) Unlock() error {
 	if self.ifHolding {
 		_, err := self.client.CompareAndDelete(self.name, self.value, 0)
 		if err != nil {
-			etcdErr, ok := err.(*etcd.EtcdError)
-			if ok {
-				if etcdErr.ErrorCode == etcd.ErrCodeEtcdNotReachable {
-					return ErrEtcdBad
-				}
+			if IsEtcdNotReachable(err) {
+				return ErrEtcdBad
 			}
 			logger.Errorf("[SeizeLock][Unlock] delete lock[%s] error: %s", self.name, err.Error())
 		}
@@ -154,15 +152,9 @@ func (self *SeizeLock) refresh() {
 			return
 		case <-time.After(time.Second * time.Duration(self.ttl*4/10)):
 			if rsp, err := self.client.CompareAndSwap(self.name, self.value, self.ttl, self.value, self.modifiedIndex); err != nil {
-				etcdErr, ok := err.(*etcd.EtcdError)
-				if ok {
-					if etcdErr.ErrorCode != etcd.ErrCodeEtcdNotReachable {
-						// if ! not reachable, maybe value changed, return.
-						logger.Errorf("seize lock[%s] error: %s.", self.name, err.Error())
-						return
-					}
-				} else {
-					// stop refresh
+				if !IsEtcdNotReachable(err) {
+					// if ! not reachable, maybe value changed, return.
+					logger.Errorf("seize lock[%s] error: %s.", self.name, err.Error())
 					return
 				}
 			} else {
@@ -175,7 +167,7 @@ func (self *SeizeLock) refresh() {
 // 分布式时序锁 Distributed timing lock
 // ETCD维持一份sequence，保证子节点创建的时序性，从而也形成了每个客户端的全局时序
 type HauntTimingRWLock struct {
-	client     *etcd.Client
+	client     *EtcdClient
 	name       string
 	id         string
 	ttl        uint64
@@ -188,7 +180,7 @@ type HauntTimingRWLock struct {
 
 var LockTypes = map[LOCK_TYPE]string{H_LOCK_READ: "haunt-read-lock", H_LOCK_WRITE: "haunt-write-lock"}
 
-func NewHauntTimingRWLock(etcdClient *etcd.Client, lockType LOCK_TYPE, namespace, name, value string, ttl uint64) *HauntTimingRWLock {
+func NewHauntTimingRWLock(etcdClient *EtcdClient, lockType LOCK_TYPE, namespace, name, value string, ttl uint64) *HauntTimingRWLock {
 	return &HauntTimingRWLock{
 		client:   etcdClient,
 		name:     path.Join(HAUNT_TIMING_LOCK_DIR, namespace, name),
@@ -271,58 +263,63 @@ func (self *HauntTimingRWLock) enqueueLock(id string) error {
 	self.token = token
 	self.refreshKey = path.Join(self.name, token)
 	logger.Infof("[HauntTimingRWLock][enqueueLock] Got token[%s] for lock[%s] with id[%s]", token, self.name, id)
+	fmt.Printf("[HauntTimingRWLock][enqueueLock] Got token[%s] for lock[%s] with id[%s]\n", token, self.name, id)
 
 	return nil
 }
 
 func (self *HauntTimingRWLock) waitLock() error {
-	watchChan := make(chan *etcd.Response, 1)
-	watchFailChan := make(chan bool, 1)
-	watchStopChan := make(chan bool, 1)
-
-	go func() {
-		logger.Infof("[HauntTimingRWLock][waitLock] start to watch lock[%s-%s] token[%s]", self.name, LockTypes[self.lockType], self.token)
-		self.watch(watchChan, watchStopChan, watchFailChan)
-	}()
-
-	defer func() {
-		logger.Infof("[HauntTimingRWLock][waitLock] stop to watch lock[%s-%s] token[%s]", self.name, LockTypes[self.lockType], self.token)
-		watchStopChan <- true
-	}()
-
 	if ifGot, err := self.tryAcquireLock(); err != nil {
 		return err
 	} else if ifGot {
 		logger.Infof("[HauntTimingRWLock][waitLock] got the lock[%s-%s] token[%s]", self.name, LockTypes[self.lockType], self.token)
 		return nil
 	}
-
-	for {
+	
+	watchStop := make(chan bool)
+	watcher := self.client.Watch(self.name, 0, true)
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
 		select {
-		case rsp := <-watchChan:
-			if rsp == nil {
-				logger.Info("[HauntTimingRWLock][waitLock] got nil rsp in watch channel.")
-				continue
-			}
-			logger.Infof("[HauntTimingRWLock][waitLock] watch rsp action[%s] lock[%s-%s] token[%s]", rsp.Action, self.name, LockTypes[self.lockType], self.token)
-			if rsp.Action == "expire" || rsp.Action == "delete" {
-				if _, t := path.Split(rsp.Node.Key); t == self.token {
-					logger.Errorf("[HauntTimingRWLock][waitLock] lack[%s] token[%s] expired", self.name, self.token)
-					return ErrLockExpired
-				}
-				if ifGot, err := self.tryAcquireLock(); err != nil {
-					return err
-				} else if ifGot {
-					logger.Infof("[HauntTimingRWLock][waitLock] got the lock[%s-%s] token[%s]", self.name, LockTypes[self.lockType], self.token)
-					return nil
-				}
-			}
-		case <-watchFailChan:
-			watchChan = make(chan *etcd.Response, 1)
-			go self.watch(watchChan, watchStopChan, watchFailChan)
 		case <-self.stop:
-			logger.Infof("[HauntTimingRWLock][waitLock] stop lock.")
-			return fmt.Errorf("Stop lock by user.")
+			cancel()
+		case <-watchStop:
+			return
+		}
+	}()
+	defer func() {
+		close(watchStop)
+	}()
+	
+	for {
+		rsp, err := watcher.Next(ctx)
+		if err != nil {
+			if err == context.Canceled {
+				logger.Infof("[HauntTimingRWLock][waitLock] watch key[%s] canceled.", self.name)
+				return nil
+			} else {
+				logger.Errorf("[HauntTimingRWLock][waitLock] watcher key[%s] error: %s", self.name, err.Error())
+				time.Sleep(5 * time.Second)
+			}
+			continue
+		}
+		if rsp == nil {
+			logger.Info("[HauntTimingRWLock][waitLock] got nil rsp in watch channel.")
+			continue
+		}
+		fmt.Println(rsp.Action, rsp.Node.Key, self.name, LockTypes[self.lockType], self.token)
+		logger.Infof("[HauntTimingRWLock][waitLock] watch rsp action[%s] lock[%s-%s] token[%s]", rsp.Action, self.name, LockTypes[self.lockType], self.token)
+		if rsp.Action == "expire" || rsp.Action == "delete" {
+			if _, t := path.Split(rsp.Node.Key); t == self.token {
+				logger.Errorf("[HauntTimingRWLock][waitLock] lack[%s] token[%s] expired", self.name, self.token)
+				return ErrLockExpired
+			}
+			if ifGot, err := self.tryAcquireLock(); err != nil {
+				return err
+			} else if ifGot {
+				logger.Infof("[HauntTimingRWLock][waitLock] got the lock[%s-%s] token[%s]", self.name, LockTypes[self.lockType], self.token)
+				return nil
+			}
 		}
 	}
 
@@ -336,6 +333,7 @@ func (self *HauntTimingRWLock) tryAcquireLock() (bool, error) {
 		return false, ErrLockGet
 	}
 	for i, node := range rsp.Node.Nodes {
+		fmt.Println(self.name, node.Key, node.Value)
 		var value LockValue
 		if err := json.Unmarshal([]byte(node.Value), &value); err != nil {
 			logger.Errorf("[HauntTimingRWLock][tryAcquireLock] json unmarshal error: %s", err.Error())
@@ -366,29 +364,20 @@ func (self *HauntTimingRWLock) tryAcquireLock() (bool, error) {
 }
 
 func (self *HauntTimingRWLock) refreshTTL() error {
-	value := &LockValue{
-		LockType: LockTypes[self.lockType],
-		ID:       self.id,
-	}
-	valueBytes, err := json.Marshal(value)
+	//value := &LockValue{
+	//	LockType: LockTypes[self.lockType],
+	//	ID:       self.id,
+	//}
+	//valueBytes, err := json.Marshal(value)
+	//if err != nil {
+	//	logger.Errorf("[HauntTimingRWLock][refreshTTL] failed to marshal value lock[%s] error: %s", self.name, err.Error())
+	//	return ErrLockMarshal
+	//}
+	_, err := self.client.SetWithTTL(self.refreshKey, self.ttl)
 	if err != nil {
-		logger.Errorf("[HauntTimingRWLock][refreshTTL] failed to marshal value lock[%s] error: %s", self.name, err.Error())
-		return ErrLockMarshal
-	}
-	_, err = self.client.Update(self.refreshKey, string(valueBytes), self.ttl)
-	if err != nil {
+		fmt.Println("update error:", err.Error())
 		logger.Errorf("[HauntTimingRWLock][refreshTTL] failed to refresh lock[%s] error: %s", self.name, err.Error())
 		return ErrLockExpired
 	}
 	return nil
-}
-
-func (self *HauntTimingRWLock) watch(watchCh chan *etcd.Response, watchStopCh chan bool, watchFailCh chan bool) {
-	_, err := self.client.Watch(self.name, 0, true, watchCh, watchStopCh)
-	if err == etcd.ErrWatchStoppedByUser {
-		return
-	} else {
-		logger.Errorf("[HauntTimingRWLock][watch] watch key[%s] error: %s", self.name, err.Error())
-		watchFailCh <- true
-	}
 }

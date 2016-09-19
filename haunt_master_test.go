@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"testing"
 	"time"
-
-	"github.com/coreos/go-etcd/etcd"
 )
 
 func getMaster(host string, master *EtcdLock) {
@@ -44,8 +42,7 @@ func goMaster(host string, master *EtcdLock) {
 }
 
 func TestMaster(t *testing.T) {
-	hosts := initEtcdHost("192.168.66.205:2379,192.168.66.237:2379")
-	etcdClient := etcd.NewClient(hosts)
+	etcdClient := NewEClient("http://etcd-dev.s.qima-inc.com:2379")
 	lock := NewMaster(etcdClient, "mtest", "127.0.0.1", 30)
 	lock2 := NewMaster(etcdClient, "mtest", "127.0.0.2", 30)
 	lock3 := NewMaster(etcdClient, "mtest", "127.0.0.3", 30)

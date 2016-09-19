@@ -1,4 +1,3 @@
-
 package haunt_lock
 
 import (
@@ -71,4 +70,3 @@ func init() {
 	// Default logger uses the go default log.
 	SetLogger(log.New(ioutil.Discard, "go-x-lock", log.LstdFlags), LOG_DEBUG)
 }
-

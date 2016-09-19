@@ -12,14 +12,14 @@ import (
 	"net"
 	"net/url"
 	"os"
-	"strings"
 	"sync/atomic"
-
-	"github.com/coreos/go-etcd/etcd"
+	
+	"github.com/coreos/etcd/client"
 )
 
 const (
-	ErrCodeETCDKeyNotFound = 100
+	ErrCodeEtcdNotReachable    = 501
+	ErrCodeUnhandledHTTPStatus = 502
 )
 
 var (
@@ -29,33 +29,29 @@ var (
 	ip       string
 )
 
-func NewEtcdClient(etcdHost string) *etcd.Client {
-	hosts := initEtcdHost(etcdHost)
-	return etcd.NewClient(hosts)
-}
-
-func GetMasterDir() string {
-	return HAUNT_MASTER_DIR
-}
-
-func initEtcdHost(etcdHost string) []string {
-	hosts := strings.Split(etcdHost, ",")
-	for i, host := range hosts {
-		u, err := url.Parse(host)
+func initEtcdPeers(machines []string) error {
+	for i, ep := range machines {
+		u, err := url.Parse(ep)
 		if err != nil {
-			return nil
+			return err
 		}
 		if u.Scheme == "" {
 			u.Scheme = "http"
 		}
-		hosts[i] = u.String()
+		machines[i] = u.String()
 	}
-	return hosts
+	return nil
 }
 
-func IfETCDKeyNotFound(err error) bool {
-	etcdErr, ok := err.(*etcd.EtcdError)
-	return ok && etcdErr != nil && etcdErr.ErrorCode == ErrCodeETCDKeyNotFound
+func IsEtcdNotReachable(err error) bool {
+	if cErr, ok := err.(client.Error); ok {
+		return cErr.Code == ErrCodeEtcdNotReachable
+	}
+	return false
+}
+
+func GetMasterDir() string {
+	return HAUNT_MASTER_DIR
 }
 
 func getID() string {

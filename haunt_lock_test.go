@@ -6,6 +6,8 @@ import (
 	"time"
 )
 
+var etcdHost = "http://etcd-dev.s.qima-inc.com:2379"
+
 func goGetSLock(lockName string, sLock *SeizeLock) {
 	err := sLock.Lock()
 	if err != nil {
@@ -22,9 +24,9 @@ func goGetSLock(lockName string, sLock *SeizeLock) {
 }
 
 func TestSeizeLock(t *testing.T) {
-	sLock1 := NewSeizeLock(NewEtcdClient("192.168.66.205:2379,192.168.66.237:2379"), "slock", "v1", 10)
-	sLock2 := NewSeizeLock(NewEtcdClient("192.168.66.205:2379,192.168.66.237:2379"), "slock", "v2", 10)
-	sLock3 := NewSeizeLock(NewEtcdClient("192.168.66.205:2379,192.168.66.237:2379"), "slock", "v3", 10)
+	sLock1 := NewSeizeLock(NewEClient(etcdHost), "slock", "v1", 10)
+	sLock2 := NewSeizeLock(NewEClient(etcdHost), "slock", "v2", 10)
+	sLock3 := NewSeizeLock(NewEClient(etcdHost), "slock", "v3", 10)
 
 	go goGetSLock("v1", sLock1)
 	go goGetSLock("v2", sLock2)
@@ -46,9 +48,9 @@ func goGetTLock(lockName string, tLock *HauntTimingRWLock) {
 }
 
 func TestTimingLock(t *testing.T) {
-	tLock1 := NewHauntTimingRWLock(NewEtcdClient("192.168.66.205:2379,192.168.66.237:2379"), H_LOCK_WRITE, "youzan", "twlock", "v", 30)
-	tLock2 := NewHauntTimingRWLock(NewEtcdClient("192.168.66.205:2379,192.168.66.237:2379"), H_LOCK_WRITE, "youzan", "twlock", "v", 30)
-	tLock3 := NewHauntTimingRWLock(NewEtcdClient("192.168.66.205:2379,192.168.66.237:2379"), H_LOCK_READ, "youzan", "twlock", "v", 30)
+	tLock1 := NewHauntTimingRWLock(NewEClient(etcdHost), H_LOCK_WRITE, "youzan", "twlock", "v1", 30)
+	tLock2 := NewHauntTimingRWLock(NewEClient(etcdHost), H_LOCK_WRITE, "youzan", "twlock", "v2", 30)
+	tLock3 := NewHauntTimingRWLock(NewEClient(etcdHost), H_LOCK_READ, "youzan", "twlock", "v3", 30)
 
 	go goGetTLock("tLock1", tLock1)
 	go goGetTLock("tLock2", tLock2)
